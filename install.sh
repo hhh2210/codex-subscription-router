@@ -134,7 +134,7 @@ main() {
     fi
 
     log "Building and signing Codex Subscription Router"
-    # macOS /bin/bash is 3.2; set -u treats "${empty[@]}" as unbound.
+    # macOS /bin/bash is 3.2; with set -u, expanding an empty array (e.g. "${patch_arguments[@]}") errors as “unbound variable”.
     if [ "${#patch_arguments[@]}" -ne 0 ]; then
         python3 scripts/patch_app.py "${patch_arguments[@]}"
     else
