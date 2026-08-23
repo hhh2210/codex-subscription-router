@@ -12,6 +12,12 @@ this project uses [Semantic Versioning](https://semver.org/).
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
 
+### Fixed
+
+- Ad-hoc and non-OpenAI signatures no longer keep `aps-environment`, which
+  made AMFI kill the copied app at launch. First install now falls back to
+  ad-hoc when no signing certificate is present.
+
 ## [0.1.0] - 2026-08-15
 
 ### Added
