@@ -134,7 +134,12 @@ main() {
     fi
 
     log "Building and signing Codex Subscription Router"
-    python3 scripts/patch_app.py "${patch_arguments[@]}"
+    # macOS /bin/bash is 3.2; set -u treats "${empty[@]}" as unbound.
+    if [ "${#patch_arguments[@]}" -ne 0 ]; then
+        python3 scripts/patch_app.py "${patch_arguments[@]}"
+    else
+        python3 scripts/patch_app.py
+    fi
 
     log "Launching Codex Subscription Router"
     open "${DESTINATION_APP}"
