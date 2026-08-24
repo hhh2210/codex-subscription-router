@@ -11,6 +11,9 @@ this project uses [Semantic Versioning](https://semver.org/).
   rebuilds, recoverable upgrades, and automatic launch.
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
+- Native `auth.json` import for secondary ChatGPT subscriptions, with strict
+  shape validation, duplicate-account protection, private atomic writes, and
+  first-start app-server verification.
 
 ## [0.1.0] - 2026-08-15
 

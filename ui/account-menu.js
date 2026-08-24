@@ -233,6 +233,7 @@ function CodexMuxAccountMenu() {
   const [busy, setBusy] = kXc.useState(false);
   const [error, setError] = kXc.useState("");
   const [login, setLogin] = kXc.useState(null);
+  const [addMethodOpen, setAddMethodOpen] = kXc.useState(false);
   const [codeCopied, setCodeCopied] = kXc.useState(false);
   const loginAccountId = login?.accountId || null;
 
@@ -284,15 +285,16 @@ function CodexMuxAccountMenu() {
   }, [refresh, loginAccountId]);
 
   kXc.useEffect(() => {
-    if (!login) return;
+    if (!login && !addMethodOpen) return;
     const allowEscapeDismissal = (event) => {
       if (event.key !== "Escape") return;
       codexMuxLoginActive = false;
       setLogin(null);
+      setAddMethodOpen(false);
     };
     window.addEventListener("keydown", allowEscapeDismissal, true);
     return () => window.removeEventListener("keydown", allowEscapeDismissal, true);
-  }, [login]);
+  }, [login, addMethodOpen]);
 
   const connected = accounts.filter(
     (account) => account.connected && account.enabled,
@@ -311,6 +313,8 @@ function CodexMuxAccountMenu() {
   async function addSubscription(event) {
     event.preventDefault();
     if (busy) return;
+    codexMuxLoginActive = true;
+    setAddMethodOpen(false);
     setBusy(true);
     setError("");
     try {
@@ -330,10 +334,84 @@ function CodexMuxAccountMenu() {
       setLogin(pendingLogin);
       await refresh();
     } catch (requestError) {
+      codexMuxLoginActive = false;
       setError(requestError.message);
     } finally {
       setBusy(false);
     }
+  }
+
+  function chooseAddMethod(event) {
+    event.preventDefault();
+    if (busy) return;
+    codexMuxLoginActive = true;
+    setAddMethodOpen(true);
+  }
+
+  function cancelAddMethod(event) {
+    event.preventDefault();
+    if (busy) return;
+    codexMuxLoginActive = false;
+    setAddMethodOpen(false);
+  }
+
+  function importSubscription(event) {
+    event.preventDefault();
+    if (busy) return;
+    codexMuxLoginActive = true;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json,.json";
+    input.hidden = true;
+    document.body.append(input);
+    codexMuxLoginActive = true;
+    const cleanup = () => {
+      codexMuxLoginActive = false;
+      input.remove();
+    };
+    input.addEventListener("cancel", cleanup, { once: true });
+    input.addEventListener(
+      "change",
+      async () => {
+        const file = input.files?.[0];
+        if (!file) {
+          cleanup();
+          return;
+        }
+        setBusy(true);
+        setError("");
+        try {
+          if (file.size > 64 * 1024) {
+            throw new Error("auth.json must be smaller than 64 KB.");
+          }
+          const auth = JSON.parse(await file.text());
+          if (auth == null || Array.isArray(auth) || typeof auth !== "object") {
+            throw new Error("auth.json must contain one JSON object.");
+          }
+          await codexMuxRequest("/accounts/import", {
+            method: "POST",
+            body: JSON.stringify({
+              label: `Subscription ${accounts.length + 1}`,
+              auth,
+            }),
+          });
+          await refresh();
+        } catch (requestError) {
+          const message =
+            requestError instanceof SyntaxError
+              ? "auth.json is not valid JSON."
+              : requestError.message;
+          await refresh();
+          setError(message);
+        } finally {
+          setBusy(false);
+          setAddMethodOpen(false);
+          cleanup();
+        }
+      },
+      { once: true },
+    );
+    input.click();
   }
 
   async function copyCodeAndContinue(event) {
@@ -463,17 +541,54 @@ function CodexMuxAccountMenu() {
   }
 
   if (!loading) {
-    rows.push(
-      (0, e7.jsx)(
-        _H,
-        {
-          LeftIcon: CodexMuxPlusIcon,
-          onSelect: addSubscription,
-          children: busy ? "Adding subscription…" : "Add another subscription",
-        },
-        "codex-mux-add",
-      ),
-    );
+    if (addMethodOpen) {
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            LeftIcon: CodexMuxPlusIcon,
+            SubText: "Sign in with a one-time device code",
+            onSelect: addSubscription,
+            children: busy ? "Working…" : "Continue with ChatGPT",
+          },
+          "codex-mux-add-device-code",
+        ),
+      );
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            LeftIcon: CodexMuxCopyIcon,
+            SubText: "Use an existing Codex login file",
+            onSelect: importSubscription,
+            children: busy ? "Working…" : "Import auth.json",
+          },
+          "codex-mux-import-auth",
+        ),
+      );
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            onSelect: cancelAddMethod,
+            children: "Cancel",
+          },
+          "codex-mux-cancel-add",
+        ),
+      );
+    } else {
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            LeftIcon: CodexMuxPlusIcon,
+            onSelect: chooseAddMethod,
+            children: "Add another subscription",
+          },
+          "codex-mux-add",
+        ),
+      );
+    }
   }
   rows.push((0, e7.jsx)(CH.Separator, {}, "codex-mux-separator"));
   return (0, e7.jsx)(e7.Fragment, { children: rows });
