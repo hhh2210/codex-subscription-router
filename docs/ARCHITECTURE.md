@@ -59,5 +59,5 @@ before forwarding the strict RPC request to the chosen child.
 The renderer talks to a loopback-only HTTP service on port 48123. All private
 routes require a random 256-bit token. CORS is limited to the copied app's
 `app://-` origin. The service exposes account metadata, aggregated usage and
-profile data, thread ownership, login/logout actions, and an authenticated SSE
-event stream; it never returns OAuth tokens.
+profile data, thread ownership, login/logout and subscription-removal actions,
+and an authenticated SSE event stream; it never returns OAuth tokens.

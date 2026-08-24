@@ -188,6 +188,17 @@ The profile menu displays combined weekly usage followed by one row per
 subscription. Email addresses remain masked until hovered. The final row always
 starts another sign-in.
 
+### Remove a subscription
+
+1. Open the profile menu and select **Manage subscriptions**.
+2. Select the subscription to remove; the Primary subscription cannot be
+   removed.
+3. Confirm the removal. The subscription's chats leave this app immediately,
+   routing stops, and its isolated account data is moved to
+   `~/.codex-mux/backups/accounts/<id>-<timestamp>`. Delete backups manually
+   once you are sure you will not need them; they contain the account's
+   credentials and conversation history.
+
 ## Routing behavior
 
 | Situation | Behaviour |
@@ -241,7 +252,7 @@ helper and socket paths and are not relocatable or intended for redistribution.
 | `~/.codex` | Primary credentials, conversations, and cache |
 | `~/.codex-mux/state.json` | Account metadata and sticky thread ownership |
 | `~/.codex-mux/accounts/<id>/codex-home` | Isolated secondary account data |
-| `~/.codex-mux/control-token` | Token for the loopback-only control service |
+| `~/.codex-mux/backups/accounts/<id>-<timestamp>` | Account data preserved when a subscription is removed |
 | `~/.codex-mux/backups` | Recoverable app and helper backups |
 | `~/Library/Application Support/Codex Subscription Router` | Independent desktop profile |
 

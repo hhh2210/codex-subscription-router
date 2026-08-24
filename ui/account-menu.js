@@ -234,6 +234,9 @@ function CodexMuxAccountMenu() {
   const [error, setError] = kXc.useState("");
   const [login, setLogin] = kXc.useState(null);
   const [codeCopied, setCodeCopied] = kXc.useState(false);
+  const [managing, setManaging] = kXc.useState(false);
+  const [pendingRemoval, setPendingRemoval] = kXc.useState(null);
+  const [removalError, setRemovalError] = kXc.useState("");
   const loginAccountId = login?.accountId || null;
 
   const refresh = kXc.useCallback(async () => {
@@ -268,6 +271,7 @@ function CodexMuxAccountMenu() {
           setLogin(null);
         }
         if (payload.type === "account-updated") refresh();
+        if (payload.type === "account-removed") refresh();
       } catch {}
     };
     const warmupTimer = setTimeout(refresh, 2_000);
@@ -284,15 +288,17 @@ function CodexMuxAccountMenu() {
   }, [refresh, loginAccountId]);
 
   kXc.useEffect(() => {
-    if (!login) return;
+    if (!login && !managing && !pendingRemoval) return;
     const allowEscapeDismissal = (event) => {
       if (event.key !== "Escape") return;
       codexMuxLoginActive = false;
       setLogin(null);
+      setPendingRemoval(null);
+      setManaging(false);
     };
     window.addEventListener("keydown", allowEscapeDismissal, true);
     return () => window.removeEventListener("keydown", allowEscapeDismissal, true);
-  }, [login]);
+  }, [login, managing, pendingRemoval]);
 
   const connected = accounts.filter(
     (account) => account.connected && account.enabled,
@@ -365,6 +371,40 @@ function CodexMuxAccountMenu() {
     }
   }
 
+  function startManaging(event) {
+    event.preventDefault();
+    setPendingRemoval(null);
+    setRemovalError("");
+    setManaging(true);
+  }
+
+  function exitManaging(event) {
+    event.preventDefault();
+    setPendingRemoval(null);
+    setRemovalError("");
+    setManaging(false);
+  }
+
+  async function removeSubscription(event) {
+    event.preventDefault();
+    if (busy || !pendingRemoval) return;
+    setBusy(true);
+    setRemovalError("");
+    try {
+      await codexMuxRequest(
+        `/accounts/${encodeURIComponent(pendingRemoval.id)}`,
+        { method: "DELETE" },
+      );
+      setPendingRemoval(null);
+      setManaging(false);
+      await refresh();
+    } catch (requestError) {
+      setRemovalError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const rows = [];
   rows.push(
     (0, e7.jsx)(
@@ -413,15 +453,77 @@ function CodexMuxAccountMenu() {
             ? (0, e7.jsx)(CodexMuxMaskedEmail, { email: account.email })
             : account.planType || "ChatGPT subscription",
           className: "group",
-          rightIcon: (0, e7.jsx)("span", {
-            className: "text-token-description-foreground tabular-nums",
-            children: remaining == null ? "–" : `${Math.round(remaining)}%`,
-          }),
+          onSelect: managing && !account.controller
+            ? () => setPendingRemoval(account)
+            : undefined,
+          rightIcon: managing
+            ? (0, e7.jsx)("span", {
+                className: [
+                  "text-xs font-medium",
+                  account.controller
+                    ? "text-token-description-foreground"
+                    : "text-token-text-primary",
+                ].join(" "),
+                children: account.controller ? "Primary" : "Remove",
+              })
+            : (0, e7.jsx)("span", {
+                className: "text-token-description-foreground tabular-nums",
+                children: remaining == null ? "–" : `${Math.round(remaining)}%`,
+              }),
           children: account.planLabel
             ? `${account.label} · ${account.planLabel}`
             : account.label,
         },
         `codex-mux-account-${account.id}`,
+      ),
+    );
+  }
+
+  if (pendingRemoval) {
+    const pendingLabel = pendingRemoval.planLabel
+      ? `${pendingRemoval.label} · ${pendingRemoval.planLabel}`
+      : pendingRemoval.label;
+    rows.push(
+      (0, e7.jsx)(
+        _H,
+        {
+          LeftIcon: S2,
+          SubText:
+            "Its chats leave this app immediately; the account data is kept in a local backup",
+          tone: "danger",
+          allowWrap: true,
+          subTextAllowWrap: true,
+          onSelect: removeSubscription,
+          children: busy ? "Removing…" : `Remove ${pendingLabel} from this Mac`,
+        },
+        "codex-mux-remove-confirm",
+      ),
+    );
+    rows.push(
+      (0, e7.jsx)(
+        _H,
+        {
+          onSelect: () => setPendingRemoval(null),
+          children: "Cancel",
+        },
+        "codex-mux-remove-cancel",
+      ),
+    );
+  }
+
+  if (removalError) {
+    rows.push(
+      (0, e7.jsx)(
+        _H,
+        {
+          LeftIcon: S2,
+          SubText: removalError,
+          tone: "danger",
+          allowWrap: true,
+          subTextAllowWrap: true,
+          children: "Could not remove subscription",
+        },
+        "codex-mux-remove-error",
       ),
     );
   }
@@ -472,6 +574,18 @@ function CodexMuxAccountMenu() {
           children: busy ? "Adding subscription…" : "Add another subscription",
         },
         "codex-mux-add",
+      ),
+    );
+  }
+  if (!loading && connected.length > 0) {
+    rows.push(
+      (0, e7.jsx)(
+        _H,
+        {
+          onSelect: managing ? exitManaging : startManaging,
+          children: managing ? "Done" : "Manage subscriptions",
+        },
+        managing ? "codex-mux-manage-done" : "codex-mux-manage",
       ),
     );
   }
