@@ -151,7 +151,11 @@ func (c *Child) Stop(ctx context.Context) error {
 		return nil
 	}
 	if err := c.command.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
+		if killErr := c.command.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			return errors.Join(err, killErr)
+		}
+		<-c.closed
+		return nil
 	}
 	select {
 	case <-c.closed:
