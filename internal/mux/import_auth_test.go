@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func TestImportAccountAuthenticatesOnFirstChildStart(t *testing.T) {
 	multiplexer, err := New(Options{
 		RealExecutable: os.Args[0],
 		RealArgs:       []string{"-test.run=TestImportedAuthHelperProcess"},
-		Environment:    append(os.Environ(), "CODEX_MUX_AUTH_HELPER=1"),
+		Environment:    append(os.Environ(), "CODEX_MUX_AUTH_HELPER=connected"),
 		Store:          store,
 		Output:         io.Discard,
 	})
@@ -64,8 +65,82 @@ func TestImportAccountAuthenticatesOnFirstChildStart(t *testing.T) {
 	}
 }
 
+func TestImportAccountRollsBackStartupAndVerificationFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		executable string
+		helperMode string
+		initialize bool
+	}{
+		{name: "process start", executable: "missing-app-server"},
+		{name: "initialize", executable: os.Args[0], helperMode: "initialize-error", initialize: true},
+		{name: "disconnected verification", executable: os.Args[0], helperMode: "disconnected"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := state.Open(filepath.Join(root, "mux"), filepath.Join(root, "primary"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			executable := test.executable
+			args := []string(nil)
+			environment := os.Environ()
+			if test.helperMode != "" {
+				args = []string{"-test.run=TestImportedAuthHelperProcess"}
+				environment = append(environment, "CODEX_MUX_AUTH_HELPER="+test.helperMode)
+			} else {
+				executable = filepath.Join(root, executable)
+			}
+			multiplexer, err := New(Options{
+				RealExecutable: executable,
+				RealArgs:       args,
+				Environment:    environment,
+				Store:          store,
+				Output:         io.Discard,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer multiplexer.Close()
+			if test.initialize {
+				multiplexer.initializeParams = json.RawMessage(`{"clientInfo":{"name":"test"}}`)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := multiplexer.ImportAccount(ctx, "Rejected", json.RawMessage(importedAuthFixture)); err == nil {
+				t.Fatal("failed import unexpectedly succeeded")
+			}
+			if accounts := store.Accounts(); len(accounts) != 1 || accounts[0].ID != "primary" {
+				t.Fatalf("accounts after rollback = %#v", accounts)
+			}
+			multiplexer.childrenMu.RLock()
+			childCount := len(multiplexer.children)
+			multiplexer.childrenMu.RUnlock()
+			if childCount != 0 {
+				t.Fatalf("child count after rollback = %d, want 0", childCount)
+			}
+			entries, err := os.ReadDir(filepath.Join(store.Root(), "accounts"))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("account resources remain after rollback: %v", entries)
+			}
+			reopened, err := state.Open(store.Root(), filepath.Join(root, "primary"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if accounts := reopened.Accounts(); len(accounts) != 1 || accounts[0].ID != "primary" {
+				t.Fatalf("persisted accounts after rollback = %#v", accounts)
+			}
+		})
+	}
+}
+
 func TestImportedAuthHelperProcess(t *testing.T) {
-	if os.Getenv("CODEX_MUX_AUTH_HELPER") != "1" {
+	mode := os.Getenv("CODEX_MUX_AUTH_HELPER")
+	if mode == "" {
 		return
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -79,10 +154,19 @@ func TestImportedAuthHelperProcess(t *testing.T) {
 			continue
 		}
 		result := any(map[string]any{})
+		if request.Method == "initialize" && mode == "initialize-error" {
+			_ = encoder.Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"error": map[string]any{"code": -32000, "message": "initialize rejected"},
+			})
+			continue
+		}
 		switch request.Method {
 		case "account/read":
 			authPath := filepath.Join(os.Getenv("CODEX_HOME"), "auth.json")
-			if _, err := os.Stat(authPath); err != nil {
+			if mode == "disconnected" {
+				result = map[string]any{"account": nil}
+			} else if _, err := os.Stat(authPath); err != nil {
 				result = map[string]any{"account": nil}
 			} else {
 				result = map[string]any{"account": map[string]any{

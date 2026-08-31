@@ -143,6 +143,28 @@ func (c *Child) Close() error {
 	return c.command.Process.Signal(os.Interrupt)
 }
 
+// Stop interrupts the child and waits for it to exit. If the graceful stop
+// does not finish before ctx expires, Stop kills the process and still waits
+// for Wait to release its resources.
+func (c *Child) Stop(ctx context.Context) error {
+	if c.command.Process == nil {
+		return nil
+	}
+	if err := c.command.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	select {
+	case <-c.closed:
+		return nil
+	case <-ctx.Done():
+		if err := c.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		<-c.closed
+		return nil
+	}
+}
+
 func (c *Child) readLoop(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)

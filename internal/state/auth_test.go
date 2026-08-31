@@ -2,6 +2,7 @@ package state
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,18 @@ func TestValidateImportedAuthRejectsUnsafeOrIncompleteShapes(t *testing.T) {
 				t.Fatal("invalid auth.json unexpectedly passed validation")
 			}
 		})
+	}
+}
+
+func TestValidateImportedAuthRejectsNormalizedFileOverLimit(t *testing.T) {
+	template := `{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"access_token":"%s","refresh_token":"refresh","account_id":"normalized-size"}}`
+	withoutPadding := fmt.Sprintf(template, "")
+	contents := fmt.Sprintf(template, strings.Repeat("a", MaxImportedAuthBytes-len(withoutPadding)))
+	if len(contents) != MaxImportedAuthBytes {
+		t.Fatalf("fixture size = %d, want %d", len(contents), MaxImportedAuthBytes)
+	}
+	if _, _, err := validateImportedAuth([]byte(contents)); err == nil || !strings.Contains(err.Error(), "normalized auth.json exceeds") {
+		t.Fatalf("normalized oversize error = %v", err)
 	}
 }
 

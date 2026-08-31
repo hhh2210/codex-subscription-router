@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -92,7 +94,48 @@ func validateImportedAuth(contents []byte) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("format auth.json: %w", err)
 	}
 	normalized.WriteByte('\n')
+	if normalized.Len() > MaxImportedAuthBytes {
+		return nil, "", fmt.Errorf("normalized auth.json exceeds %d bytes", MaxImportedAuthBytes)
+	}
 	return normalized.Bytes(), strings.TrimSpace(auth.Tokens.AccountID), nil
+}
+
+// DiscardImportedAccount removes a failed import from routing state and wipes
+// its generated account directory, including auth.json and any child-created
+// token or database material. It only accepts the exact account-home layout
+// created by addAccountLocked.
+func (s *Store) DiscardImportedAccount(id string) error {
+	s.mu.Lock()
+	index := slices.IndexFunc(s.accounts, func(account Account) bool { return account.ID == id })
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("account %q not found", id)
+	}
+	account := s.accounts[index]
+	accountRoot := filepath.Clean(filepath.Join(s.root, "accounts", id))
+	if account.Controller || filepath.Clean(filepath.Dir(account.CodexHome)) != accountRoot {
+		s.mu.Unlock()
+		return fmt.Errorf("account %q is not a disposable imported account", id)
+	}
+	previousAccounts := slices.Clone(s.accounts)
+	previousOwners := maps.Clone(s.owners)
+	s.accounts = slices.Delete(s.accounts, index, index+1)
+	for threadID, owner := range s.owners {
+		if owner == id {
+			delete(s.owners, threadID)
+		}
+	}
+	if err := s.saveLocked(); err != nil {
+		s.accounts = previousAccounts
+		s.owners = previousOwners
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	if err := os.RemoveAll(accountRoot); err != nil {
+		return fmt.Errorf("remove imported account resources: %w", err)
+	}
+	return nil
 }
 
 func ensureJSONEnd(decoder *json.Decoder) error {

@@ -365,19 +365,40 @@ function CodexMuxAccountMenu() {
     input.hidden = true;
     document.body.append(input);
     codexMuxLoginActive = true;
+    let pickerFinished = false;
+    let cleanedUp = false;
     const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      window.removeEventListener("focus", detectPickerDismissal);
+      input.removeEventListener("cancel", cancelPicker);
       codexMuxLoginActive = false;
       input.remove();
     };
-    input.addEventListener("cancel", cleanup, { once: true });
+    const cancelPicker = () => {
+      if (pickerFinished) return;
+      pickerFinished = true;
+      setAddMethodOpen(false);
+      cleanup();
+    };
+    const detectPickerDismissal = () => {
+      window.setTimeout(() => {
+        if (!pickerFinished && !input.files?.length) cancelPicker();
+      }, 0);
+    };
+    input.addEventListener("cancel", cancelPicker, { once: true });
+    window.addEventListener("focus", detectPickerDismissal, { once: true });
     input.addEventListener(
       "change",
       async () => {
         const file = input.files?.[0];
         if (!file) {
-          cleanup();
+          cancelPicker();
           return;
         }
+        pickerFinished = true;
+        window.removeEventListener("focus", detectPickerDismissal);
+        input.removeEventListener("cancel", cancelPicker);
         setBusy(true);
         setError("");
         try {
