@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStoreBootstrapsPrimaryAndPersistsThreadAffinity(t *testing.T) {
@@ -223,5 +224,117 @@ func TestRemoveAccountClearsOwnershipAndPersists(t *testing.T) {
 	}
 	if _, ok := reopened.Account(added.ID); ok {
 		t.Fatal("removed account reappeared after reopening the store")
+	}
+}
+
+func TestRemoveAccountRollsBackMemoryAndStageWhenPersistenceFails(t *testing.T) {
+	root := t.TempDir()
+	muxRoot := filepath.Join(root, "mux")
+	store, err := Open(muxRoot, filepath.Join(root, "primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.AddAccount("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetThreadOwner("thread-work", account.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(muxRoot, "state.json.tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staged := false
+	rolledBack := false
+	_, err = store.RemoveAccountWithStage(account.ID, func(Account) (func() error, error) {
+		staged = true
+		return func() error {
+			rolledBack = true
+			return nil
+		}, nil
+	})
+	if err == nil {
+		t.Fatal("removal unexpectedly succeeded with an unwritable state temporary path")
+	}
+	if !staged || !rolledBack {
+		t.Fatalf("stage lifecycle = staged:%v rolledBack:%v", staged, rolledBack)
+	}
+	if _, ok := store.Account(account.ID); !ok {
+		t.Fatal("account was not restored in memory")
+	}
+	if owner, ok := store.ThreadOwner("thread-work"); !ok || owner != account.ID {
+		t.Fatalf("thread owner was not restored: owner=%q ok=%v", owner, ok)
+	}
+	reopened, err := Open(muxRoot, filepath.Join(root, "primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.Account(account.ID); !ok {
+		t.Fatal("persisted account was changed despite the failed commit")
+	}
+}
+
+func TestRemovalSerializesConfigSyncAndPreventsHomeRecreation(t *testing.T) {
+	root := t.TempDir()
+	primaryHome := filepath.Join(root, "primary")
+	if err := os.MkdirAll(primaryHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(primaryHome, "config.toml"), []byte("model = \"shared\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(filepath.Join(root, "mux"), primaryHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.AddAccount("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Dir(account.CodexHome)
+	destination := filepath.Join(store.Root(), "backups", "staged")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stageStarted := make(chan struct{})
+	releaseStage := make(chan struct{})
+	removeDone := make(chan error, 1)
+	go func() {
+		_, removeErr := store.RemoveAccountWithStage(account.ID, func(Account) (func() error, error) {
+			if err := os.Rename(source, destination); err != nil {
+				return nil, err
+			}
+			close(stageStarted)
+			<-releaseStage
+			return func() error { return os.Rename(destination, source) }, nil
+		})
+		removeDone <- removeErr
+	}()
+	<-stageStarted
+
+	syncStarted := make(chan struct{})
+	syncDone := make(chan error, 1)
+	go func() {
+		close(syncStarted)
+		syncDone <- store.SyncManagedConfig()
+	}()
+	<-syncStarted
+	select {
+	case err := <-syncDone:
+		t.Fatalf("config sync escaped the removal transaction: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseStage)
+	if err := <-removeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-syncDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("removed account home was recreated: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "codex-home", "config.toml")); err != nil {
+		t.Fatalf("staged backup was lost: %v", err)
 	}
 }

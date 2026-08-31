@@ -335,6 +335,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 			response.Header().Set("Access-Control-Allow-Origin", "app://-")
 			response.Header().Set("Vary", "Origin")
 		}
+		response.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Codex-Mux-Token")
 		response.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		response.Header().Set("Cache-Control", "no-store")
 		response.Header().Set("Referrer-Policy", "no-referrer")

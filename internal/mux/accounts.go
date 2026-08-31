@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/b-nnett/codex-subscription-router/internal/backend"
 	"github.com/b-nnett/codex-subscription-router/internal/state"
 )
 
@@ -124,6 +125,11 @@ func (m *Multiplexer) UpdateAccount(ctx context.Context, id string, label *strin
 // Primary subscription cannot be removed. Order matters: every step before
 // the state commit is reversible, and the commit is what makes it permanent.
 func (m *Multiplexer) RemoveAccount(ctx context.Context, id string) error {
+	m.removalMu.Lock()
+	defer m.removalMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	account, ok := m.store.Account(id)
 	if !ok {
 		return fmt.Errorf("account %q not found", id)
@@ -131,42 +137,84 @@ func (m *Multiplexer) RemoveAccount(ctx context.Context, id string) error {
 	if account.Controller {
 		return errors.New("the Primary subscription cannot be removed")
 	}
-	if child, ok := m.child(id); ok {
-		_ = child.Close()
-		m.childrenMu.Lock()
-		delete(m.children, id)
-		m.childrenMu.Unlock()
+	child, hadChild := m.takeChild(id)
+	if hadChild {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		closeErr := child.CloseAndWait(shutdownContext)
+		cancel()
+		if closeErr != nil {
+			restartErr := m.restartAccountChild(account)
+			return errors.Join(
+				fmt.Errorf("stop subscription app-server: %w", closeErr),
+				restartErr,
+			)
+		}
 	}
-	if err := backupAccountHome(m.store.Root(), account); err != nil {
-		return fmt.Errorf("back up subscription home: %w", err)
+	now := time.Now
+	if m.now != nil {
+		now = m.now
 	}
-	if _, err := m.store.RemoveAccount(id); err != nil {
+	if _, err := m.store.RemoveAccountWithStage(id, func(account state.Account) (func() error, error) {
+		rollback, err := stageAccountHomeBackup(m.store.Root(), account, now())
+		if err != nil {
+			return nil, fmt.Errorf("back up subscription home: %w", err)
+		}
+		return rollback, nil
+	}); err != nil {
+		if hadChild {
+			return errors.Join(err, m.restartAccountChild(account))
+		}
 		return err
 	}
 	m.publish(Event{Type: "account-removed", AccountID: id, Message: account.Label})
 	return nil
 }
 
-// backupAccountHome moves accounts/<id> (the isolated Codex home and any
-// sibling state) under backups/accounts/<id>-<unix-seconds>. Missing
-// directories are ignored: nothing was created, so nothing is lost.
-func backupAccountHome(root string, account state.Account) error {
+func (m *Multiplexer) takeChild(accountID string) (*backend.Child, bool) {
+	m.childrenMu.Lock()
+	defer m.childrenMu.Unlock()
+	child, ok := m.children[accountID]
+	if ok {
+		delete(m.children, accountID)
+	}
+	return child, ok
+}
+
+func (m *Multiplexer) restartAccountChild(account state.Account) error {
+	restartContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	if _, err := m.startChild(restartContext, account); err != nil {
+		return fmt.Errorf("restore subscription app-server: %w", err)
+	}
+	return nil
+}
+
+// stageAccountHomeBackup moves accounts/<id> (the isolated Codex home and any
+// sibling state) under backups/accounts/<id>-<unix-seconds> and returns a
+// rollback that restores the original location. Missing directories are
+// ignored: nothing was created, so nothing is lost.
+func stageAccountHomeBackup(root string, account state.Account, now time.Time) (func() error, error) {
 	source := filepath.Dir(account.CodexHome)
 	if _, err := os.Stat(source); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	backupRoot := filepath.Join(root, "backups", "accounts")
 	if err := os.MkdirAll(backupRoot, 0o700); err != nil {
-		return fmt.Errorf("create account backup root: %w", err)
+		return nil, fmt.Errorf("create account backup root: %w", err)
 	}
-	destination := filepath.Join(backupRoot, fmt.Sprintf("%s-%d", account.ID, time.Now().Unix()))
+	destination := filepath.Join(backupRoot, fmt.Sprintf("%s-%d", account.ID, now.Unix()))
 	if err := os.Rename(source, destination); err != nil {
-		return fmt.Errorf("move account home: %w", err)
+		return nil, fmt.Errorf("move account home: %w", err)
 	}
-	return nil
+	return func() error {
+		if err := os.Rename(destination, source); err != nil {
+			return fmt.Errorf("restore account home: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 func (m *Multiplexer) ThreadAccount(ctx context.Context, threadID string) (AccountSnapshot, error) {

@@ -252,6 +252,7 @@ helper and socket paths and are not relocatable or intended for redistribution.
 | `~/.codex` | Primary credentials, conversations, and cache |
 | `~/.codex-mux/state.json` | Account metadata and sticky thread ownership |
 | `~/.codex-mux/accounts/<id>/codex-home` | Isolated secondary account data |
+| `~/.codex-mux/control-token` | Token for the loopback-only control service |
 | `~/.codex-mux/backups/accounts/<id>-<timestamp>` | Account data preserved when a subscription is removed |
 | `~/.codex-mux/backups` | Recoverable app and helper backups |
 | `~/Library/Application Support/Codex Subscription Router` | Independent desktop profile |

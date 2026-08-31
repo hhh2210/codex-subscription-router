@@ -60,6 +60,7 @@ type Multiplexer struct {
 	childrenMu sync.RWMutex
 	children   map[string]*backend.Child
 	inbound    chan backend.Inbound
+	removalMu  sync.Mutex
 
 	initializationMu sync.RWMutex
 	initializeParams json.RawMessage

@@ -23,6 +23,52 @@ async function codexMuxRequest(path, options = {}) {
   return body;
 }
 
+function codexMuxSubscribeToEvents(onEvent) {
+  const events = new EventSource(
+    `${CODEX_MUX_API}/events?token=${encodeURIComponent(CODEX_MUX_TOKEN)}`,
+  );
+  events.onmessage = (event) => {
+    try {
+      onEvent(JSON.parse(event.data));
+    } catch {}
+  };
+  return () => events.close();
+}
+
+function codexMuxConnectedAccounts(accounts) {
+  return accounts.filter((account) => account.connected && account.enabled);
+}
+
+function codexMuxMenuAccounts(accounts, managing) {
+  return managing ? accounts : codexMuxConnectedAccounts(accounts);
+}
+
+function codexMuxSelectRemoval(event, account, setPendingRemoval, setRemovalError) {
+  event.preventDefault();
+  if (account.controller) return;
+  setRemovalError("");
+  setPendingRemoval(account);
+}
+
+function codexMuxPluginAccounts(accounts) {
+  return codexMuxConnectedAccounts(accounts);
+}
+
+function codexMuxNextPluginAccountId(accounts, currentId) {
+  return accounts.some((account) => account.id === currentId)
+    ? currentId
+    : accounts[0]?.id || "primary";
+}
+
+function codexMuxInvalidatePluginQueries(queryClient) {
+  return queryClient.invalidateQueries({
+    predicate: (query) => {
+      const root = query.queryKey?.[0];
+      return root === "apps" || root === "plugins" || root === "mcp";
+    },
+  });
+}
+
 const CODEX_MUX_ACCOUNT_SCOPED_PLUGIN_METHODS = new Set([
   "list-apps",
   "list-installed-apps",
@@ -243,9 +289,7 @@ function CodexMuxAccountMenu() {
     try {
       const result = await codexMuxRequest("/accounts");
       const nextAccounts = result.accounts || [];
-      globalThis.__codexMuxConnectedAccounts = nextAccounts.filter(
-        (account) => account.connected && account.enabled,
-      );
+      globalThis.__codexMuxConnectedAccounts = codexMuxConnectedAccounts(nextAccounts);
       setAccounts(nextAccounts);
       setError("");
       if (nextAccounts.some((account) => account.connected)) setLoading(false);
@@ -257,23 +301,17 @@ function CodexMuxAccountMenu() {
 
   kXc.useEffect(() => {
     refresh();
-    const events = new EventSource(
-      `${CODEX_MUX_API}/events?token=${encodeURIComponent(CODEX_MUX_TOKEN)}`,
-    );
-    events.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (
-          payload.type === "account-updated" &&
-          payload.accountId === loginAccountId
-        ) {
-          codexMuxLoginActive = false;
-          setLogin(null);
-        }
-        if (payload.type === "account-updated") refresh();
-        if (payload.type === "account-removed") refresh();
-      } catch {}
-    };
+    const unsubscribe = codexMuxSubscribeToEvents((payload) => {
+      if (
+        payload.type === "account-updated" &&
+        payload.accountId === loginAccountId
+      ) {
+        codexMuxLoginActive = false;
+        setLogin(null);
+      }
+      if (payload.type === "account-updated") refresh();
+      if (payload.type === "account-removed") refresh();
+    });
     const warmupTimer = setTimeout(refresh, 2_000);
     const loadingDeadline = setTimeout(() => {
       refresh().finally(() => setLoading(false));
@@ -283,7 +321,7 @@ function CodexMuxAccountMenu() {
       clearTimeout(warmupTimer);
       clearTimeout(loadingDeadline);
       clearInterval(timer);
-      events.close();
+      unsubscribe();
     };
   }, [refresh, loginAccountId]);
 
@@ -300,9 +338,8 @@ function CodexMuxAccountMenu() {
     return () => window.removeEventListener("keydown", allowEscapeDismissal, true);
   }, [login, managing, pendingRemoval]);
 
-  const connected = accounts.filter(
-    (account) => account.connected && account.enabled,
-  );
+  const connected = codexMuxConnectedAccounts(accounts);
+  const menuAccounts = codexMuxMenuAccounts(accounts, managing);
   const weeklyWindows = connected.map((account) =>
     codexMuxWeeklyWindow(account.rateLimits),
   );
@@ -430,13 +467,13 @@ function CodexMuxAccountMenu() {
       "codex-mux-total",
     ),
   );
-  if (connected.length > 0) {
+  if (menuAccounts.length > 0) {
     rows.push(
       (0, e7.jsx)(CH.Separator, {}, "codex-mux-accounts-separator"),
     );
   }
 
-  for (const account of connected) {
+  for (const account of menuAccounts) {
     const weekly = codexMuxWeeklyWindow(account.rateLimits);
     const remaining = weekly == null ? null : Math.max(0, 100 - weekly.usedPercent);
     rows.push(
@@ -449,12 +486,22 @@ function CodexMuxAccountMenu() {
               imageUrl: account.profileImageUrl,
               label: account.label,
             }),
-          SubText: account.email
-            ? (0, e7.jsx)(CodexMuxMaskedEmail, { email: account.email })
-            : account.planType || "ChatGPT subscription",
+          SubText: !account.enabled
+            ? "Disabled subscription"
+            : !account.connected
+              ? "Not connected"
+              : account.email
+                ? (0, e7.jsx)(CodexMuxMaskedEmail, { email: account.email })
+                : account.planType || "ChatGPT subscription",
           className: "group",
-          onSelect: managing && !account.controller
-            ? () => setPendingRemoval(account)
+          onSelect: managing
+            ? (event) =>
+                codexMuxSelectRemoval(
+                  event,
+                  account,
+                  setPendingRemoval,
+                  setRemovalError,
+                )
             : undefined,
           rightIcon: managing
             ? (0, e7.jsx)("span", {
@@ -503,7 +550,10 @@ function CodexMuxAccountMenu() {
       (0, e7.jsx)(
         _H,
         {
-          onSelect: () => setPendingRemoval(null),
+          onSelect: (event) => {
+            event.preventDefault();
+            setPendingRemoval(null);
+          },
           children: "Cancel",
         },
         "codex-mux-remove-cancel",
@@ -577,7 +627,7 @@ function CodexMuxAccountMenu() {
       ),
     );
   }
-  if (!loading && connected.length > 0) {
+  if (!loading && accounts.some((account) => !account.controller)) {
     rows.push(
       (0, e7.jsx)(
         _H,
@@ -802,25 +852,34 @@ function CodexMuxPluginScope() {
   const [selectedId, setSelectedId] = kXc.useState("primary");
   const [loading, setLoading] = kXc.useState(true);
   const queryClient = lt();
+  const refreshAccounts = kXc.useCallback(async (removedAccountId = null) => {
+    const result = await codexMuxRequest("/accounts");
+    const nextAccounts = codexMuxPluginAccounts(result.accounts || []);
+    const currentId = globalThis.__codexMuxPluginAccountId || "primary";
+    const nextId = codexMuxNextPluginAccountId(nextAccounts, currentId);
+    globalThis.__codexMuxPluginAccountId = nextId;
+    setAccounts(nextAccounts);
+    setSelectedId(nextId);
+    setLoading(false);
+    if (removedAccountId === currentId || nextId !== currentId) {
+      await codexMuxInvalidatePluginQueries(queryClient);
+    }
+  }, [queryClient]);
+
   kXc.useEffect(() => {
     let live = true;
-    codexMuxRequest("/accounts")
-      .then((result) => {
-        if (!live) return;
-        setAccounts(
-          (result.accounts || []).filter(
-            (account) => account.connected && account.enabled,
-          ),
-        );
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (live) setLoading(false);
-      });
+    refreshAccounts().catch(() => {
+      if (live) setLoading(false);
+    });
+    const unsubscribe = codexMuxSubscribeToEvents((payload) => {
+      if (payload.type !== "account-removed" || !live) return;
+      refreshAccounts(payload.accountId).catch(() => {});
+    });
     return () => {
       live = false;
+      unsubscribe();
     };
-  }, []);
+  }, [refreshAccounts]);
 
   kXc.useEffect(() => {
     globalThis.__codexMuxPluginAccountId = selectedId;
@@ -833,12 +892,7 @@ function CodexMuxPluginScope() {
     if (accountId === selectedId) return;
     globalThis.__codexMuxPluginAccountId = accountId;
     setSelectedId(accountId);
-    await queryClient.invalidateQueries({
-      predicate: (query) => {
-        const root = query.queryKey?.[0];
-        return root === "apps" || root === "plugins" || root === "mcp";
-      },
-    });
+    await codexMuxInvalidatePluginQueries(queryClient);
   }
 
   const selected =

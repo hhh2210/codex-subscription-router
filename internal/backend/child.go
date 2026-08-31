@@ -143,6 +143,20 @@ func (c *Child) Close() error {
 	return c.command.Process.Signal(os.Interrupt)
 }
 
+// CloseAndWait stops the app-server and waits until its process has exited so
+// callers can safely move or replace its CODEX_HOME.
+func (c *Child) CloseAndWait(ctx context.Context) error {
+	if err := c.Close(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	select {
+	case <-c.closed:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (c *Child) readLoop(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)

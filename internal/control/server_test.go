@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,9 +41,40 @@ func newRemoveTestServer(t *testing.T) (url string, token string, accountID stri
 	token = "test-token-0123456789abcdef"
 	server := New(listener.Addr().String(), token, multiplexer, false)
 	go func() { _ = server.Serve(listener) }()
-	shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	t.Cleanup(func() { _ = server.Shutdown(shutdownContext); cancel() })
+	t.Cleanup(func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownContext)
+	})
 	return "http://" + listener.Addr().String(), token, added.ID
+}
+
+func TestSecurityHeadersAllowAuthenticatedDeletePreflight(t *testing.T) {
+	url, _, _ := newRemoveTestServer(t)
+	request, err := http.NewRequest(http.MethodOptions, url+"/v1/accounts/subscription", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", "app://-")
+	request.Header.Set("Access-Control-Request-Method", http.MethodDelete)
+	request.Header.Set("Access-Control-Request-Headers", "content-type,x-codex-mux-token")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight returned %d, want 204", response.StatusCode)
+	}
+	if got := response.Header.Get("Access-Control-Allow-Origin"); got != "app://-" {
+		t.Fatalf("allowed origin = %q, want app://-", got)
+	}
+	if got := response.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type, X-Codex-Mux-Token" {
+		t.Fatalf("allowed headers = %q", got)
+	}
+	if got := response.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodDelete) {
+		t.Fatalf("allowed methods = %q, want DELETE", got)
+	}
 }
 
 func TestDeleteAccountRemovesSecondarySubscription(t *testing.T) {
