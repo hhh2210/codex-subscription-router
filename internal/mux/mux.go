@@ -286,8 +286,11 @@ func (m *Multiplexer) forward(accountID string, message protocol.Message) error 
 }
 
 func (m *Multiplexer) forwardWithExclusions(accountID string, message protocol.Message, excluded map[string]struct{}) error {
-	child, ok := m.child(accountID)
+	// Register the route before removal can detach the child and fail its RPCs.
+	m.childrenMu.RLock()
+	child, ok := m.children[accountID]
 	if !ok {
+		m.childrenMu.RUnlock()
 		return fmt.Errorf("account %s is unavailable", accountID)
 	}
 	key := protocol.RequestIDKey(message.ID)
@@ -299,13 +302,33 @@ func (m *Multiplexer) forwardWithExclusions(accountID string, message protocol.M
 		excluded:  cloneAccountSet(excluded),
 	}
 	m.externalMu.Unlock()
+	m.childrenMu.RUnlock()
 	if err := child.Send(message); err != nil {
 		m.externalMu.Lock()
+		_, pending := m.externalRoutes[key]
 		delete(m.externalRoutes, key)
 		m.externalMu.Unlock()
-		return err
+		if pending {
+			return err
+		}
+		// Removal already replied to this request.
 	}
 	return nil
+}
+
+func (m *Multiplexer) failAccountRoutes(accountID string) {
+	m.externalMu.Lock()
+	var pending []externalRoute
+	for key, route := range m.externalRoutes {
+		if route.accountID == accountID {
+			pending = append(pending, route)
+			delete(m.externalRoutes, key)
+		}
+	}
+	m.externalMu.Unlock()
+	for _, route := range pending {
+		m.write(protocol.Failure(route.message.ID, -32023, "subscription app-server stopped for account removal"))
+	}
 }
 
 func (m *Multiplexer) routeAggregatedRateLimits(message protocol.Message) {
@@ -441,6 +464,9 @@ func (m *Multiplexer) inboundLoop(ctx context.Context) {
 }
 
 func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
+	if _, exists := m.store.Account(inbound.AccountID); !exists {
+		return
+	}
 	message := inbound.Message
 	if message.Method == "account/login/completed" {
 		m.provisioningMu.Lock()

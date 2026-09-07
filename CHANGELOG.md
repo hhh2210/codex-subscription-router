@@ -11,6 +11,9 @@ this project uses [Semantic Versioning](https://semver.org/).
   rebuilds, recoverable upgrades, and automatic launch.
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
+- Subscription removal from the native account menu: manage mode selects a
+  subscription, a second confirmation step spells out the consequences, and the
+  isolated account data is moved into a timestamped local backup.
 - Native `auth.json` import for secondary ChatGPT subscriptions, with strict
   shape validation, duplicate-account protection, private atomic writes, and
   first-start app-server verification.

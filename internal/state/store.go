@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,6 +36,7 @@ type persistedState struct {
 // databases remain inside each account's isolated Codex home.
 type Store struct {
 	mu               sync.RWMutex
+	lifecycleMu      sync.Mutex
 	root             string
 	path             string
 	primaryCodexHome string
@@ -108,6 +110,8 @@ func (s *Store) Root() string {
 // isolated subscription. Credential stores and project trust remain local to
 // each account; syncIsolatedConfig deliberately excludes both.
 func (s *Store) SyncManagedConfig() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.mu.RLock()
 	accounts := slices.Clone(s.accounts)
 	primaryCodexHome := s.primaryCodexHome
@@ -235,6 +239,67 @@ func (s *Store) UpdateAccount(id string, label *string, enabled *bool) (Account,
 	return Account{}, fmt.Errorf("account %q not found", id)
 }
 
+// RemoveAccount deletes a non-controller account from routing state and
+// drops every thread assignment it owned. The isolated Codex home is not
+// deleted here; the caller decides its fate so a removal can stay recoverable.
+func (s *Store) RemoveAccount(id string) (Account, error) {
+	return s.RemoveAccountWithStage(id, nil)
+}
+
+// RemoveAccountWithStage serializes an external reversible stage with config
+// synchronization and the routing-state commit. The stage normally moves the
+// isolated home to a backup and returns a rollback that restores it. If state
+// persistence fails, both the in-memory state and the staged filesystem change
+// are restored before the store lock is released.
+func (s *Store) RemoveAccountWithStage(
+	id string,
+	stage func(Account) (rollback func() error, err error),
+) (Account, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.accounts {
+		if s.accounts[index].ID != id {
+			continue
+		}
+		if s.accounts[index].Controller || samePath(s.accounts[index].CodexHome, s.primaryCodexHome) {
+			return Account{}, errors.New("the Primary subscription cannot be removed")
+		}
+		removed := s.accounts[index]
+		var rollback func() error
+		if stage != nil {
+			var err error
+			rollback, err = stage(removed)
+			if err != nil {
+				return Account{}, err
+			}
+		}
+
+		previousAccounts := s.accounts
+		previousOwners := s.owners
+		s.accounts = slices.Delete(slices.Clone(s.accounts), index, index+1)
+		s.owners = maps.Clone(s.owners)
+		for threadID, owner := range s.owners {
+			if owner == id {
+				delete(s.owners, threadID)
+			}
+		}
+		if err := s.saveLocked(); err != nil {
+			s.accounts = previousAccounts
+			s.owners = previousOwners
+			if rollback != nil {
+				if rollbackErr := rollback(); rollbackErr != nil {
+					return Account{}, errors.Join(err, fmt.Errorf("roll back account removal: %w", rollbackErr))
+				}
+			}
+			return Account{}, err
+		}
+		return removed, nil
+	}
+	return Account{}, fmt.Errorf("account %q not found", id)
+}
+
 func (s *Store) ThreadOwner(threadID string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -248,6 +313,9 @@ func (s *Store) SetThreadOwner(threadID, accountID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !slices.ContainsFunc(s.accounts, func(account Account) bool { return account.ID == accountID }) {
+		return fmt.Errorf("account %q not found", accountID)
+	}
 	if s.owners[threadID] == accountID {
 		return nil
 	}

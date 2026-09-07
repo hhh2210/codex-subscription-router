@@ -1,8 +1,15 @@
 package mux
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/b-nnett/codex-subscription-router/internal/backend"
+	"github.com/b-nnett/codex-subscription-router/internal/state"
 )
 
 func TestPlanLabel(t *testing.T) {
@@ -143,10 +150,188 @@ func TestRouteUrgencyFallsBackToWeeklyUtilization(t *testing.T) {
 	lessUsed := routeUrgencyScore(now, &RateLimitWindow{
 		UsedPercent: 20, WindowDurationMins: &weeklyMinutes,
 	}, resetCreditMetadata{})
+
 	moreUsed := routeUrgencyScore(now, &RateLimitWindow{
 		UsedPercent: 80, WindowDurationMins: &weeklyMinutes,
 	}, resetCreditMetadata{})
 	if lessUsed <= moreUsed {
 		t.Fatalf("fallback should prefer the less-used account: less=%f more=%f", lessUsed, moreUsed)
 	}
+}
+
+func TestRemoveAccountBacksUpHomeAndPublishesEvent(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "mux"), filepath.Join(root, "primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := store.AddAccount("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 4)
+	multiplexer := &Multiplexer{
+		store:    store,
+		children: make(map[string]*backend.Child),
+		events:   map[chan Event]struct{}{events: {}},
+		now:      time.Now,
+	}
+
+	if err := multiplexer.RemoveAccount(context.Background(), "primary"); err == nil {
+		t.Fatal("removing the Primary subscription must fail")
+	}
+	if err := multiplexer.RemoveAccount(context.Background(), added.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Account(added.ID); ok {
+		t.Fatal("removed account is still routable")
+	}
+	if _, err := os.Stat(added.CodexHome); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("isolated home was not moved out: %v", err)
+	}
+	backups, err := filepath.Glob(filepath.Join(store.Root(), "backups", "accounts", added.ID+"-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected exactly one account backup, found %d", len(backups))
+	}
+	if _, err := os.Stat(filepath.Join(backups[0], "codex-home", "config.toml")); err != nil {
+		t.Fatalf("backup is missing the isolated config: %v", err)
+	}
+	select {
+	case event := <-events:
+		if event.Type != "account-removed" || event.AccountID != added.ID {
+			t.Fatalf("unexpected removal event: %#v", event)
+		}
+	default:
+		t.Fatal("no account-removed event was published")
+	}
+}
+
+func TestTakeChildRemovesMapEntryBeforeShutdown(t *testing.T) {
+	child := &backend.Child{}
+	multiplexer := &Multiplexer{children: map[string]*backend.Child{"work": child}}
+	taken, ok := multiplexer.takeChild("work")
+	if !ok || taken != child {
+		t.Fatalf("unexpected detached child: child=%p ok=%v", taken, ok)
+	}
+	if _, ok := multiplexer.child("work"); ok {
+		t.Fatal("child remained discoverable after it was detached")
+	}
+}
+
+func TestRemoveAccountRestartsChildWhenBackupFails(t *testing.T) {
+	store, account, multiplexer := newRunningRemovalMultiplexer(t)
+	original, ok := multiplexer.child(account.ID)
+	if !ok {
+		t.Fatal("account child did not start")
+	}
+	if err := os.WriteFile(filepath.Join(store.Root(), "backups"), []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := multiplexer.RemoveAccount(context.Background(), account.ID); err == nil {
+		t.Fatal("removal unexpectedly succeeded with an invalid backup root")
+	}
+	if _, ok := store.Account(account.ID); !ok {
+		t.Fatal("account state changed after backup failure")
+	}
+	restarted, ok := multiplexer.child(account.ID)
+	if !ok || restarted == original {
+		t.Fatalf("account child was not restarted: child=%p original=%p", restarted, original)
+	}
+	if _, err := os.Stat(account.CodexHome); err != nil {
+		t.Fatalf("account home changed after backup failure: %v", err)
+	}
+}
+
+func TestRemoveAccountRestoresHomeStateAndChildWhenStateCommitFails(t *testing.T) {
+	store, account, multiplexer := newRunningRemovalMultiplexer(t)
+	original, _ := multiplexer.child(account.ID)
+	if err := os.Mkdir(filepath.Join(store.Root(), "state.json.tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := multiplexer.RemoveAccount(context.Background(), account.ID); err == nil {
+		t.Fatal("removal unexpectedly succeeded with an unwritable state temporary path")
+	}
+	if _, ok := store.Account(account.ID); !ok {
+		t.Fatal("account state was not rolled back")
+	}
+	if _, err := os.Stat(filepath.Join(account.CodexHome, "config.toml")); err != nil {
+		t.Fatalf("account home was not restored: %v", err)
+	}
+	backups, err := filepath.Glob(filepath.Join(store.Root(), "backups", "accounts", account.ID+"-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("rollback left account backups behind: %v", backups)
+	}
+	restarted, ok := multiplexer.child(account.ID)
+	if !ok || restarted == original {
+		t.Fatalf("account child was not restored: child=%p original=%p", restarted, original)
+	}
+}
+
+func TestConcurrentRemoveAccountCommitsOnceWithoutRestartingRemovedChild(t *testing.T) {
+	store, account, multiplexer := newRunningRemovalMultiplexer(t)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			results <- multiplexer.RemoveAccount(context.Background(), account.ID)
+		}()
+	}
+	close(start)
+	first := <-results
+	second := <-results
+	if (first == nil) == (second == nil) {
+		t.Fatalf("concurrent removals should produce one success: first=%v second=%v", first, second)
+	}
+	if _, ok := store.Account(account.ID); ok {
+		t.Fatal("removed account remained in state")
+	}
+	if _, ok := multiplexer.child(account.ID); ok {
+		t.Fatal("a concurrent removal restarted the removed account child")
+	}
+	backups, err := filepath.Glob(filepath.Join(store.Root(), "backups", "accounts", account.ID+"-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("concurrent removal created %d backups, want 1", len(backups))
+	}
+}
+
+func newRunningRemovalMultiplexer(t *testing.T) (*state.Store, state.Account, *Multiplexer) {
+	t.Helper()
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "mux"), filepath.Join(root, "primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.AddAccount("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiplexer, err := New(Options{
+		RealExecutable: "/bin/cat",
+		Store:          store,
+		Output:         os.Stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := multiplexer.startChild(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, entry := range multiplexer.childEntries() {
+			shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = entry.child.Stop(shutdownContext)
+			cancel()
+		}
+	})
+	return store, account, multiplexer
 }

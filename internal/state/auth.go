@@ -105,6 +105,8 @@ func validateImportedAuth(contents []byte) ([]byte, string, error) {
 // token or database material. It only accepts the exact account-home layout
 // created by addAccountLocked.
 func (s *Store) DiscardImportedAccount(id string) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.mu.Lock()
 	index := slices.IndexFunc(s.accounts, func(account Account) bool { return account.ID == id })
 	if index < 0 {
