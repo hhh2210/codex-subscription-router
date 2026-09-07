@@ -425,6 +425,7 @@ TEAM_SCOPED_ENTITLEMENTS = (
     # Push is provisioned to OpenAI team 2DC432GLL2. Keeping it on an ad-hoc
     # signature or any other team makes AMFI kill the process at exec
     # (restricted entitlement, codesign still reports valid on disk).
+    "aps-environment",
     "com.apple.developer.aps-environment",
 )
 
