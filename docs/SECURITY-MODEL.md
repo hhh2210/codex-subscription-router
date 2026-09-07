@@ -43,8 +43,11 @@ documented ChatGPT profile and rate-limit APIs.
 
 The source app is copied into a temporary staging directory. Native modules,
 the Computer Use helper, Node runtime, mux, and final app are signed under one
-selected Apple team and verified before replacement. Official OpenAI
-application-group and keychain entitlements are removed from modified callers.
+selected Apple team when available, otherwise ad-hoc, and verified before
+replacement. Official OpenAI application-group, keychain, and push
+(`aps-environment`) entitlements are removed from modified callers. Push is
+provisioned to OpenAI's team; leaving it on any other signature is a
+restricted-entitlement AMFI kill, including ad-hoc.
 
 The native helper's caller allowlist is patched to the selected team and the
 independent desktop bundle ID. This is required for the helper's peer checks;

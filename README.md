@@ -91,10 +91,12 @@ is rejected by default rather than being partially patched. See
 - Xcode Command Line Tools
 - Go 1.26+
 - Node.js 22.12+ and npm
-- An Apple Development or Developer ID Application signing identity
+- Optional: an Apple Development or Developer ID Application signing identity
 
-A team-backed signing identity is required for reliable Appshots and Computer
-Use permissions. Ad-hoc signing is intended only for diagnostics.
+A team-backed signing identity is used when one is present so Appshots and
+Computer Use keep stable privacy grants. If none exists, the patcher signs
+ad-hoc automatically. Restricted OpenAI entitlements such as push
+(`aps-environment`) are stripped so AMFI will still launch the copy.
 
 ## Install
 
@@ -137,8 +139,9 @@ This creates:
 - an independent desktop profile under
   `~/Library/Application Support/Codex Subscription Router`
 
-The first valid Developer ID Application identity is selected, falling back to
-an Apple Development identity. Select a certificate explicitly when needed:
+The first valid Developer ID Application identity is selected, then an Apple
+Development identity, then an ad-hoc signature. Select a certificate
+explicitly when needed:
 
 ```sh
 CODEX_MUX_SIGNING_IDENTITY="Developer ID Application: Example Corp (TEAMID1234)" \
@@ -150,13 +153,10 @@ designated requirement and can invalidate existing macOS privacy consent. The
 patcher refuses an unexpected team change unless you deliberately pass
 `--allow-signing-team-change`.
 
-For diagnostic builds without a certificate:
-
-```sh
-python3 scripts/patch_app.py --allow-adhoc-signing
-```
-
-Appshots and Computer Use may not function with an ad-hoc signature.
+`--allow-adhoc-signing` is accepted for compatibility. It is no longer
+required: a machine with no certificate already gets an ad-hoc build. Appshots
+and Computer Use may still fail helper peer checks without a team-backed
+identity.
 
 ## Grant macOS permissions
 
