@@ -11,6 +11,11 @@ import (
 )
 
 func (m *Multiplexer) ImportAccount(ctx context.Context, label string, authJSON json.RawMessage) (AccountSnapshot, error) {
+	m.provisioningMu.Lock()
+	defer m.provisioningMu.Unlock()
+	if len(m.pendingLogins) != 0 {
+		return AccountSnapshot{}, errors.New("finish or cancel the pending ChatGPT login before importing credentials")
+	}
 	account, err := m.store.AddAccountWithAuth(label, authJSON)
 	if err != nil {
 		return AccountSnapshot{}, err

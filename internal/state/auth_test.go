@@ -21,6 +21,52 @@ const validImportedAuth = `{
   "last_refresh": "2026-08-24T00:00:00Z"
 }`
 
+func TestImportStateCommitFailureLeavesNoAccountOrCredentials(t *testing.T) {
+	root := t.TempDir()
+	primary := filepath.Join(root, "primary")
+	store, err := Open(filepath.Join(root, "mux"), primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make the final state rename fail after auth.json has been written.
+	backup := store.path + ".saved"
+	if err := os.Rename(store.path, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(store.path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAccountWithAuth("Import", []byte(validImportedAuth)); err == nil {
+		t.Fatal("expected state commit failure")
+	}
+	if len(store.Accounts()) != 1 {
+		t.Fatal("failed import left an in-memory account")
+	}
+	entries, err := os.ReadDir(filepath.Join(store.Root(), "accounts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("failed import left account resources")
+	}
+	if err := os.Remove(store.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(backup, store.path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddAccountWithAuth("Retry", []byte(validImportedAuth)); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(store.Root(), primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.Accounts()) != 2 {
+		t.Fatal("retry did not persist exactly one import")
+	}
+}
+
 func TestValidateImportedAuthAcceptsNativeRefreshableBundle(t *testing.T) {
 	normalized, accountID, err := validateImportedAuth([]byte(validImportedAuth))
 	if err != nil {

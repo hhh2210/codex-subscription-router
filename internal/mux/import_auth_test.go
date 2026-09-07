@@ -8,9 +8,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/b-nnett/codex-subscription-router/internal/backend"
+	"github.com/b-nnett/codex-subscription-router/internal/protocol"
 	"github.com/b-nnett/codex-subscription-router/internal/state"
 )
 
@@ -154,7 +157,8 @@ func TestImportedAuthHelperProcess(t *testing.T) {
 			continue
 		}
 		result := any(map[string]any{})
-		if request.Method == "initialize" && mode == "initialize-error" {
+		if (request.Method == "initialize" && mode == "initialize-error") ||
+			(request.Method == "account/login/start" && mode == "login-error") {
 			_ = encoder.Encode(map[string]any{
 				"jsonrpc": "2.0", "id": request.ID,
 				"error": map[string]any{"code": -32000, "message": "initialize rejected"},
@@ -181,4 +185,74 @@ func TestImportedAuthHelperProcess(t *testing.T) {
 		_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
 	}
 	os.Exit(0)
+}
+
+func TestImportWaitsForPendingDeviceLoginAndRechecksDuplicate(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "mux"), filepath.Join(root, "primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.AddAccount("Pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(Options{RealExecutable: os.Args[0], RealArgs: []string{"-test.run=TestImportedAuthHelperProcess"},
+		Environment: append(os.Environ(), "CODEX_MUX_AUTH_HELPER=connected"), Store: store, Output: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := m.startChild(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.StartLogin(ctx, pending.ID, "chatgptDeviceCode"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ImportAccount(ctx, "Import", json.RawMessage(importedAuthFixture)); err == nil || !strings.Contains(err.Error(), "pending ChatGPT login") {
+		t.Fatalf("import during login: %v", err)
+	}
+	if len(store.Accounts()) != 2 {
+		t.Fatal("blocked import created an account")
+	}
+	// The child persists credentials before reporting login completion.
+	if err := os.WriteFile(filepath.Join(pending.CodexHome, "auth.json"), []byte(importedAuthFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.handleInbound(backend.Inbound{AccountID: pending.ID, Message: protocol.Message{Method: "account/login/completed"}})
+	if _, err := m.ImportAccount(ctx, "Duplicate", json.RawMessage(importedAuthFixture)); !errors.Is(err, state.ErrDuplicateChatGPTAccount) {
+		t.Fatalf("import after login must detect duplicate: %v", err)
+	}
+	unique := strings.ReplaceAll(importedAuthFixture, "account-import-test", "different-account")
+	if _, err := m.ImportAccount(ctx, "Other", json.RawMessage(unique)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFailedLoginStartDoesNotBlockImport(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "mux"), filepath.Join(root, "primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(Options{RealExecutable: os.Args[0], RealArgs: []string{"-test.run=TestImportedAuthHelperProcess"},
+		Environment: append(os.Environ(), "CODEX_MUX_AUTH_HELPER=login-error"), Store: store, Output: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	primary, _ := store.Controller()
+	if _, err := m.startChild(ctx, primary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.StartLogin(ctx, primary.ID, "chatgptDeviceCode"); err == nil {
+		t.Fatal("expected login failure")
+	}
+	if _, err := m.ImportAccount(ctx, "Import", json.RawMessage(importedAuthFixture)); err != nil {
+		t.Fatal(err)
+	}
 }

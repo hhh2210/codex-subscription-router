@@ -132,9 +132,16 @@ func (m *Multiplexer) StartLogin(ctx context.Context, id, mode string) (json.Raw
 	if !ok {
 		return nil, fmt.Errorf("account %q is unavailable", id)
 	}
+	m.provisioningMu.Lock()
+	defer m.provisioningMu.Unlock()
+	if len(m.pendingLogins) != 0 {
+		return nil, errors.New("a ChatGPT login is already pending")
+	}
+	m.pendingLogins[id] = true
 	params, _ := json.Marshal(map[string]any{"type": mode})
 	response, err := child.Request(ctx, "account/login/start", params)
 	if err != nil {
+		delete(m.pendingLogins, id)
 		return nil, err
 	}
 	return response.Result, nil

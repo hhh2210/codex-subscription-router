@@ -161,7 +161,7 @@ func (s *Store) AddAccount(label string) (Account, error) {
 	return s.addAccountLocked(label, nil)
 }
 
-func (s *Store) addAccountLocked(label string, authContents []byte) (Account, error) {
+func (s *Store) addAccountLocked(label string, authContents []byte) (result Account, resultErr error) {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		label = fmt.Sprintf("Subscription %d", len(s.accounts)+1)
@@ -174,6 +174,14 @@ func (s *Store) addAccountLocked(label string, authContents []byte) (Account, er
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return Account{}, fmt.Errorf("create account home: %w", err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			if err := os.RemoveAll(filepath.Dir(codexHome)); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("remove uncommitted account: %w", err))
+			}
+		}
+	}()
 	if err := os.Chmod(codexHome, 0o700); err != nil {
 		return Account{}, fmt.Errorf("secure account home: %w", err)
 	}
@@ -195,8 +203,10 @@ func (s *Store) addAccountLocked(label string, authContents []byte) (Account, er
 	}
 	s.accounts = append(s.accounts, account)
 	if err := s.saveLocked(); err != nil {
+		s.accounts = s.accounts[:len(s.accounts)-1]
 		return Account{}, err
 	}
+	committed = true
 	return account, nil
 }
 

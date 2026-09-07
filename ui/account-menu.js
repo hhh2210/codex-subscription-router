@@ -343,7 +343,7 @@ function CodexMuxAccountMenu() {
 
   function chooseAddMethod(event) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || login) return;
     codexMuxLoginActive = true;
     setAddMethodOpen(true);
   }
@@ -357,7 +357,7 @@ function CodexMuxAccountMenu() {
 
   function importSubscription(event) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || login) return;
     codexMuxLoginActive = true;
     const input = document.createElement("input");
     input.type = "file";
@@ -603,6 +603,7 @@ function CodexMuxAccountMenu() {
           _H,
           {
             LeftIcon: CodexMuxPlusIcon,
+            disabled: login != null,
             onSelect: chooseAddMethod,
             children: "Add another subscription",
           },
