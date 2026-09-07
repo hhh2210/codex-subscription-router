@@ -12,6 +12,10 @@ this project uses [Semantic Versioning](https://semver.org/).
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
 
+### Fixed
+
+- Empty `patch_arguments` expansion in `install.sh` under bash 3.2 `set -u`.
+
 ## [0.1.0] - 2026-08-15
 
 ### Added

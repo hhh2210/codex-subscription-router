@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly REPOSITORY_URL="https://github.com/b-nnett/codex-subscription-router.git"
+readonly REPOSITORY_URL="https://github.com/hhh2210/codex-subscription-router.git"
 readonly DEFAULT_SOURCE_DIR="${HOME}/.codex-subscription-router/source"
 readonly SOURCE_DIR="${CODEX_SUBSCRIPTION_ROUTER_SOURCE_DIR:-${DEFAULT_SOURCE_DIR}}"
 readonly DESTINATION_APP="${HOME}/Applications/Codex Subscription Router.app"
@@ -134,7 +134,12 @@ main() {
     fi
 
     log "Building and signing Codex Subscription Router"
-    python3 scripts/patch_app.py "${patch_arguments[@]}"
+    # macOS /bin/bash is 3.2; with set -u, expanding an empty array (e.g. "${patch_arguments[@]}") errors as “unbound variable”.
+    if [ "${#patch_arguments[@]}" -ne 0 ]; then
+        python3 scripts/patch_app.py "${patch_arguments[@]}"
+    else
+        python3 scripts/patch_app.py
+    fi
 
     log "Launching Codex Subscription Router"
     open "${DESTINATION_APP}"
