@@ -36,6 +36,10 @@ The Primary account uses `~/.codex`. Added accounts use
 `~/.codex-mux/accounts/<id>/codex-home`. Managed configuration is copied from
 the Primary account, excluding credential-store settings and project trust.
 Each isolated account forces file-backed CLI and MCP OAuth credentials.
+Accounts can authenticate through the official device-code RPC or by importing
+a complete native ChatGPT `auth.json` before the account child starts. Imported
+files are validated, duplicate `account_id` values are blocked, and token
+refresh remains owned by the official Codex child in that isolated home.
 
 ## Desktop integration
 

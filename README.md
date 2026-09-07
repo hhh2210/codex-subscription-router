@@ -178,13 +178,26 @@ request Automation access the first time Computer Use controls another app.
 
 ## Add subscriptions
 
-1. Open the profile menu at the bottom of the sidebar.
-2. Select **Add another subscription**.
-3. Complete the displayed device-code sign-in in your browser.
-4. Return to Codex Subscription Router and wait for the account row to appear.
+Open the profile menu at the bottom of the sidebar and select **Add another
+subscription**, then choose one path:
+
+- Select **Continue with ChatGPT** and complete the displayed device-code
+  sign-in in your browser.
+- Select **Import auth.json** and choose an existing, native Codex ChatGPT login
+  file. The file is sent only to the token-authenticated loopback service,
+  validated, and written to the new account's isolated Codex home before its
+  app-server starts.
 
 While the code is visible, clicking away does not dismiss the menu. Clicking
 the code copies it and opens the verification page.
+
+The importer accepts only a refreshable ChatGPT shape: `auth_mode` must be
+`chatgpt`, `OPENAI_API_KEY` must be absent or null, and `access_token`,
+`refresh_token`, and `account_id` must be present. Files larger than 64 KiB,
+unknown fields, and duplicate account IDs (including Primary) are rejected.
+Imported credentials are atomically written with mode `0600`; tokens are never
+returned by the control API. Import is a Router feature, not an officially
+documented ChatGPT desktop login method.
 
 The profile menu displays combined weekly usage followed by one row per
 subscription. Email addresses remain masked until hovered. The final row always
@@ -282,6 +295,8 @@ latest completed run is recorded in
   because the upstream profile response exposes counts rather than skill IDs.
 - Generated app bundles are tied to one macOS user and signing team.
 - Releases are source-only; patched OpenAI binaries are never distributed.
+- Treat every `auth.json` as a password; never attach one to an issue, PR, log,
+  or screenshot.
 
 ## Contributing and releases
 

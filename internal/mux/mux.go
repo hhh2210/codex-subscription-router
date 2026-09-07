@@ -60,6 +60,10 @@ type Multiplexer struct {
 	childrenMu sync.RWMutex
 	children   map[string]*backend.Child
 	inbound    chan backend.Inbound
+	// Serialize imports with login starts so pending device authorization cannot
+	// acquire the same external account ID after import duplicate detection.
+	provisioningMu sync.Mutex
+	pendingLogins  map[string]bool
 
 	initializationMu sync.RWMutex
 	initializeParams json.RawMessage
@@ -103,6 +107,7 @@ func New(options Options) (*Multiplexer, error) {
 		output:               options.Output,
 		children:             make(map[string]*backend.Child),
 		inbound:              make(chan backend.Inbound, 1024),
+		pendingLogins:        make(map[string]bool),
 		externalRoutes:       make(map[string]externalRoute),
 		serverRoutes:         make(map[string]serverRequestRoute),
 		events:               make(map[chan Event]struct{}),
@@ -437,6 +442,11 @@ func (m *Multiplexer) inboundLoop(ctx context.Context) {
 
 func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 	message := inbound.Message
+	if message.Method == "account/login/completed" {
+		m.provisioningMu.Lock()
+		delete(m.pendingLogins, inbound.AccountID)
+		m.provisioningMu.Unlock()
+	}
 	if message.Method == "" && len(message.ID) > 0 {
 		key := protocol.RequestIDKey(message.ID)
 		m.externalMu.Lock()
