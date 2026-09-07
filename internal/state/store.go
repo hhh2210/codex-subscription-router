@@ -162,7 +162,10 @@ func (s *Store) Controller() (Account, bool) {
 func (s *Store) AddAccount(label string) (Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.addAccountLocked(label, nil)
+}
 
+func (s *Store) addAccountLocked(label string, authContents []byte) (result Account, resultErr error) {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		label = fmt.Sprintf("Subscription %d", len(s.accounts)+1)
@@ -175,11 +178,24 @@ func (s *Store) AddAccount(label string) (Account, error) {
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return Account{}, fmt.Errorf("create account home: %w", err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			if err := os.RemoveAll(filepath.Dir(codexHome)); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("remove uncommitted account: %w", err))
+			}
+		}
+	}()
 	if err := os.Chmod(codexHome, 0o700); err != nil {
 		return Account{}, fmt.Errorf("secure account home: %w", err)
 	}
 	if err := syncIsolatedConfig(s.primaryCodexHome, codexHome); err != nil {
 		return Account{}, fmt.Errorf("write account config: %w", err)
+	}
+	if authContents != nil {
+		if err := atomicWritePrivate(filepath.Join(codexHome, "auth.json"), authContents); err != nil {
+			return Account{}, fmt.Errorf("write account credentials: %w", err)
+		}
 	}
 
 	account := Account{
@@ -191,8 +207,10 @@ func (s *Store) AddAccount(label string) (Account, error) {
 	}
 	s.accounts = append(s.accounts, account)
 	if err := s.saveLocked(); err != nil {
+		s.accounts = s.accounts[:len(s.accounts)-1]
 		return Account{}, err
 	}
+	committed = true
 	return account, nil
 }
 
@@ -295,6 +313,9 @@ func (s *Store) SetThreadOwner(threadID, accountID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !slices.ContainsFunc(s.accounts, func(account Account) bool { return account.ID == accountID }) {
+		return fmt.Errorf("account %q not found", accountID)
+	}
 	if s.owners[threadID] == accountID {
 		return nil
 	}

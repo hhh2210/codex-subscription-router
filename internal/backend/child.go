@@ -143,17 +143,29 @@ func (c *Child) Close() error {
 	return c.command.Process.Signal(os.Interrupt)
 }
 
-// CloseAndWait stops the app-server and waits until its process has exited so
-// callers can safely move or replace its CODEX_HOME.
-func (c *Child) CloseAndWait(ctx context.Context) error {
-	if err := c.Close(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
+// Stop interrupts the child and waits for it to exit. If the graceful stop
+// does not finish before ctx expires, Stop kills the process and still waits
+// for Wait to release its resources.
+func (c *Child) Stop(ctx context.Context) error {
+	if c.command.Process == nil {
+		return nil
+	}
+	if err := c.command.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if killErr := c.command.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			return errors.Join(err, killErr)
+		}
+		<-c.closed
+		return nil
 	}
 	select {
 	case <-c.closed:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		if err := c.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		<-c.closed
+		return nil
 	}
 }
 

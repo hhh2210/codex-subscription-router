@@ -279,6 +279,7 @@ function CodexMuxAccountMenu() {
   const [busy, setBusy] = kXc.useState(false);
   const [error, setError] = kXc.useState("");
   const [login, setLogin] = kXc.useState(null);
+  const [addMethodOpen, setAddMethodOpen] = kXc.useState(false);
   const [codeCopied, setCodeCopied] = kXc.useState(false);
   const [managing, setManaging] = kXc.useState(false);
   const [pendingRemoval, setPendingRemoval] = kXc.useState(null);
@@ -303,7 +304,7 @@ function CodexMuxAccountMenu() {
     refresh();
     const unsubscribe = codexMuxSubscribeToEvents((payload) => {
       if (
-        payload.type === "account-updated" &&
+        (payload.type === "account-updated" || payload.type === "account-removed") &&
         payload.accountId === loginAccountId
       ) {
         codexMuxLoginActive = false;
@@ -326,17 +327,18 @@ function CodexMuxAccountMenu() {
   }, [refresh, loginAccountId]);
 
   kXc.useEffect(() => {
-    if (!login && !managing && !pendingRemoval) return;
+    if (!login && !addMethodOpen && !managing && !pendingRemoval) return;
     const allowEscapeDismissal = (event) => {
       if (event.key !== "Escape") return;
       codexMuxLoginActive = false;
       setLogin(null);
       setPendingRemoval(null);
       setManaging(false);
+      setAddMethodOpen(false);
     };
     window.addEventListener("keydown", allowEscapeDismissal, true);
     return () => window.removeEventListener("keydown", allowEscapeDismissal, true);
-  }, [login, managing, pendingRemoval]);
+  }, [login, addMethodOpen, managing, pendingRemoval]);
 
   const connected = codexMuxConnectedAccounts(accounts);
   const menuAccounts = codexMuxMenuAccounts(accounts, managing);
@@ -354,6 +356,8 @@ function CodexMuxAccountMenu() {
   async function addSubscription(event) {
     event.preventDefault();
     if (busy) return;
+    codexMuxLoginActive = true;
+    setAddMethodOpen(false);
     setBusy(true);
     setError("");
     try {
@@ -373,10 +377,105 @@ function CodexMuxAccountMenu() {
       setLogin(pendingLogin);
       await refresh();
     } catch (requestError) {
+      codexMuxLoginActive = false;
       setError(requestError.message);
     } finally {
       setBusy(false);
     }
+  }
+
+  function chooseAddMethod(event) {
+    event.preventDefault();
+    if (busy || login) return;
+    codexMuxLoginActive = true;
+    setAddMethodOpen(true);
+  }
+
+  function cancelAddMethod(event) {
+    event.preventDefault();
+    if (busy) return;
+    codexMuxLoginActive = false;
+    setAddMethodOpen(false);
+  }
+
+  function importSubscription(event) {
+    event.preventDefault();
+    if (busy || login) return;
+    codexMuxLoginActive = true;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json,.json";
+    input.hidden = true;
+    document.body.append(input);
+    codexMuxLoginActive = true;
+    let pickerFinished = false;
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      window.removeEventListener("focus", detectPickerDismissal);
+      input.removeEventListener("cancel", cancelPicker);
+      codexMuxLoginActive = false;
+      input.remove();
+    };
+    const cancelPicker = () => {
+      if (pickerFinished) return;
+      pickerFinished = true;
+      setAddMethodOpen(false);
+      cleanup();
+    };
+    const detectPickerDismissal = () => {
+      window.setTimeout(() => {
+        if (!pickerFinished && !input.files?.length) cancelPicker();
+      }, 0);
+    };
+    input.addEventListener("cancel", cancelPicker, { once: true });
+    window.addEventListener("focus", detectPickerDismissal, { once: true });
+    input.addEventListener(
+      "change",
+      async () => {
+        const file = input.files?.[0];
+        if (!file) {
+          cancelPicker();
+          return;
+        }
+        pickerFinished = true;
+        window.removeEventListener("focus", detectPickerDismissal);
+        input.removeEventListener("cancel", cancelPicker);
+        setBusy(true);
+        setError("");
+        try {
+          if (file.size > 64 * 1024) {
+            throw new Error("auth.json must be smaller than 64 KB.");
+          }
+          const auth = JSON.parse(await file.text());
+          if (auth == null || Array.isArray(auth) || typeof auth !== "object") {
+            throw new Error("auth.json must contain one JSON object.");
+          }
+          await codexMuxRequest("/accounts/import", {
+            method: "POST",
+            body: JSON.stringify({
+              label: `Subscription ${accounts.length + 1}`,
+              auth,
+            }),
+          });
+          await refresh();
+        } catch (requestError) {
+          const message =
+            requestError instanceof SyntaxError
+              ? "auth.json is not valid JSON."
+              : requestError.message;
+          await refresh();
+          setError(message);
+        } finally {
+          setBusy(false);
+          setAddMethodOpen(false);
+          cleanup();
+        }
+      },
+      { once: true },
+    );
+    input.click();
   }
 
   async function copyCodeAndContinue(event) {
@@ -432,6 +531,10 @@ function CodexMuxAccountMenu() {
         `/accounts/${encodeURIComponent(pendingRemoval.id)}`,
         { method: "DELETE" },
       );
+      if (pendingRemoval.id === loginAccountId) {
+        setLogin(null);
+        codexMuxLoginActive = false;
+      }
       setPendingRemoval(null);
       setManaging(false);
       await refresh();
@@ -615,17 +718,55 @@ function CodexMuxAccountMenu() {
   }
 
   if (!loading) {
-    rows.push(
-      (0, e7.jsx)(
-        _H,
-        {
-          LeftIcon: CodexMuxPlusIcon,
-          onSelect: addSubscription,
-          children: busy ? "Adding subscription…" : "Add another subscription",
-        },
-        "codex-mux-add",
-      ),
-    );
+    if (addMethodOpen) {
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            LeftIcon: CodexMuxPlusIcon,
+            SubText: "Sign in with a one-time device code",
+            onSelect: addSubscription,
+            children: busy ? "Working…" : "Continue with ChatGPT",
+          },
+          "codex-mux-add-device-code",
+        ),
+      );
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            LeftIcon: CodexMuxCopyIcon,
+            SubText: "Use an existing Codex login file",
+            onSelect: importSubscription,
+            children: busy ? "Working…" : "Import auth.json",
+          },
+          "codex-mux-import-auth",
+        ),
+      );
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            onSelect: cancelAddMethod,
+            children: "Cancel",
+          },
+          "codex-mux-cancel-add",
+        ),
+      );
+    } else {
+      rows.push(
+        (0, e7.jsx)(
+          _H,
+          {
+            LeftIcon: CodexMuxPlusIcon,
+            disabled: login != null,
+            onSelect: chooseAddMethod,
+            children: "Add another subscription",
+          },
+          "codex-mux-add",
+        ),
+      );
+    }
   }
   if (!loading && accounts.some((account) => !account.controller)) {
     rows.push(
@@ -779,9 +920,12 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
   );
   kXc.useEffect(() => {
     let live = true;
-    codexMuxRequest("/accounts")
+    let refreshVersion = 0;
+    const refreshAccounts = () => {
+      const version = ++refreshVersion;
+      return codexMuxRequest("/accounts")
       .then((result) => {
-        if (!live) return;
+        if (!live || version !== refreshVersion) return;
         const connected = (result.accounts || []).filter(
           (account) => account.connected && account.enabled,
         );
@@ -789,10 +933,27 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
         setAccounts(connected);
       })
       .catch(() => {});
+    };
+    refreshAccounts();
+    const unsubscribe = codexMuxSubscribeToEvents((payload) => {
+      if (!live || payload.type !== "account-removed") return;
+      // Invalidate selection before the parent refetches combined statistics.
+      if (globalThis.__codexMuxSelectedProfileAccountId === payload.accountId) {
+        globalThis.__codexMuxSelectedProfileAccountId = null;
+        setSelectedId(null);
+      }
+      const remaining = (globalThis.__codexMuxCombinedProfileAccounts || [])
+        .filter((account) => account.id !== payload.accountId);
+      globalThis.__codexMuxCombinedProfileAccounts = remaining;
+      setAccounts(remaining);
+      onSelect?.();
+      refreshAccounts();
+    });
     return () => {
       live = false;
+      unsubscribe();
     };
-  }, []);
+  }, [onSelect]);
   kXc.useEffect(() => {
     globalThis.__codexMuxSelectedProfileAccountId = null;
     setSelectedId(null);

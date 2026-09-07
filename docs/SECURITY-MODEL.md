@@ -19,6 +19,13 @@ profile and rate-limit-reset endpoints used by the desktop experience. It does
 not log or return tokens. State persisted by the mux contains account paths,
 labels, enabled state, and thread ownership only.
 
+The optional import endpoint is loopback-only and control-token authenticated.
+It caps the request size, accepts only the known refreshable ChatGPT auth shape,
+rejects API keys and duplicate `account_id` values, and writes through a new
+mode-`0600` temporary file followed by atomic rename. The real app-server must
+then return a connected ChatGPT account. The selected file remains in browser
+memory only for that request; Router does not keep a second refresh-token copy.
+
 The state root is mode `0700`; state, config, and control-token files are mode
 `0600`. Existing control tokens are validated as 256-bit hexadecimal values and
 their permissions are repaired on startup.
@@ -33,7 +40,8 @@ shared plugin configuration.
 
 The control server binds to `127.0.0.1`. Private endpoints require the token
 embedded into the independently built local renderer. Profile images must use
-HTTPS. Response sizes and JSON request bodies are bounded.
+HTTPS. Response sizes and JSON request bodies, including auth imports, are
+bounded.
 
 The project itself does not provide a telemetry or update endpoint. Network
 traffic beyond loopback is performed by the official Codex children or by the
@@ -43,8 +51,11 @@ documented ChatGPT profile and rate-limit APIs.
 
 The source app is copied into a temporary staging directory. Native modules,
 the Computer Use helper, Node runtime, mux, and final app are signed under one
-selected Apple team and verified before replacement. Official OpenAI
-application-group and keychain entitlements are removed from modified callers.
+selected Apple team when available, otherwise ad-hoc, and verified before
+replacement. Official OpenAI application-group, keychain, and push
+(`aps-environment`) entitlements are removed from modified callers. Push is
+provisioned to OpenAI's team; leaving it on any other signature is a
+restricted-entitlement AMFI kill, including ad-hoc.
 
 The native helper's caller allowlist is patched to the selected team and the
 independent desktop bundle ID. This is required for the helper's peer checks;

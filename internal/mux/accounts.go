@@ -125,8 +125,8 @@ func (m *Multiplexer) UpdateAccount(ctx context.Context, id string, label *strin
 // Primary subscription cannot be removed. Order matters: every step before
 // the state commit is reversible, and the commit is what makes it permanent.
 func (m *Multiplexer) RemoveAccount(ctx context.Context, id string) error {
-	m.removalMu.Lock()
-	defer m.removalMu.Unlock()
+	m.provisioningMu.Lock()
+	defer m.provisioningMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -138,16 +138,18 @@ func (m *Multiplexer) RemoveAccount(ctx context.Context, id string) error {
 		return errors.New("the Primary subscription cannot be removed")
 	}
 	child, hadChild := m.takeChild(id)
+	m.failAccountRoutes(id)
 	if hadChild {
 		shutdownContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
-		closeErr := child.CloseAndWait(shutdownContext)
+		closeErr := child.Stop(shutdownContext)
 		cancel()
 		if closeErr != nil {
-			restartErr := m.restartAccountChild(account)
-			return errors.Join(
-				fmt.Errorf("stop subscription app-server: %w", closeErr),
-				restartErr,
-			)
+			// Stop could not establish process exit. Keep its identity instead
+			// of launching a second process against the same account home.
+			m.childrenMu.Lock()
+			m.children[id] = child
+			m.childrenMu.Unlock()
+			return fmt.Errorf("stop subscription app-server: %w", closeErr)
 		}
 	}
 	now := time.Now
@@ -166,6 +168,7 @@ func (m *Multiplexer) RemoveAccount(ctx context.Context, id string) error {
 		}
 		return err
 	}
+	delete(m.pendingLogins, id)
 	m.publish(Event{Type: "account-removed", AccountID: id, Message: account.Label})
 	return nil
 }
@@ -233,9 +236,16 @@ func (m *Multiplexer) StartLogin(ctx context.Context, id, mode string) (json.Raw
 	if !ok {
 		return nil, fmt.Errorf("account %q is unavailable", id)
 	}
+	m.provisioningMu.Lock()
+	defer m.provisioningMu.Unlock()
+	if len(m.pendingLogins) != 0 {
+		return nil, errors.New("a ChatGPT login is already pending")
+	}
+	m.pendingLogins[id] = true
 	params, _ := json.Marshal(map[string]any{"type": mode})
 	response, err := child.Request(ctx, "account/login/start", params)
 	if err != nil {
+		delete(m.pendingLogins, id)
 		return nil, err
 	}
 	return response.Result, nil

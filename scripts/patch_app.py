@@ -68,7 +68,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-adhoc-signing",
         action="store_true",
-        help="Allow an ad-hoc signature (Appshots and Computer Use may stop working).",
+        help=(
+            "Accepted for compatibility. Ad-hoc signing is used automatically "
+            "when no Developer ID or Apple Development identity is found."
+        ),
     )
     parser.add_argument(
         "--allow-untested-source",
@@ -110,16 +113,17 @@ def resolve_signing_identity(allow_adhoc: bool) -> str:
         for identity in available:
             if identity.startswith(prefix):
                 return identity
-    if allow_adhoc:
-        print(
-            "Warning: using an ad-hoc signature; Appshots and Computer Use may be unavailable.",
-            file=sys.stderr,
-        )
-        return "-"
-    raise RuntimeError(
-        "no team-backed code-signing identity found; set CODEX_MUX_SIGNING_IDENTITY "
-        "or explicitly pass --allow-adhoc-signing"
+    # Ad-hoc is the first-install default. A missing Apple certificate must not
+    # block a launchable copy; restricted entitlements are stripped below so
+    # AMFI does not kill the process. Appshots/Computer Use still prefer a
+    # stable team-backed identity. `allow_adhoc` remains in the signature so
+    # existing `--allow-adhoc-signing` callers keep working.
+    print(
+        "Warning: no team-backed code-signing identity found; "
+        "using an ad-hoc signature. Appshots and Computer Use may be unavailable.",
+        file=sys.stderr,
     )
+    return "-"
 
 
 def signing_team_identifier(identity: str) -> str | None:
@@ -418,6 +422,11 @@ TEAM_SCOPED_ENTITLEMENTS = (
     "com.apple.developer.team-identifier",
     "com.apple.security.application-groups",
     "keychain-access-groups",
+    # Push is provisioned to OpenAI team 2DC432GLL2. Keeping it on an ad-hoc
+    # signature or any other team makes AMFI kill the process at exec
+    # (restricted entitlement, codesign still reports valid on disk).
+    "aps-environment",
+    "com.apple.developer.aps-environment",
 )
 
 

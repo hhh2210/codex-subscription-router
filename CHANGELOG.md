@@ -14,6 +14,16 @@ this project uses [Semantic Versioning](https://semver.org/).
 - Subscription removal from the native account menu: manage mode selects a
   subscription, a second confirmation step spells out the consequences, and the
   isolated account data is moved into a timestamped local backup.
+- Native `auth.json` import for secondary ChatGPT subscriptions, with strict
+  shape validation, duplicate-account protection, private atomic writes, and
+  first-start app-server verification.
+
+### Fixed
+
+- Ad-hoc and non-OpenAI signatures no longer keep `aps-environment`, which
+  made AMFI kill the copied app at launch. First install now falls back to
+  ad-hoc when no signing certificate is present.
+- Empty `patch_arguments` expansion in `install.sh` under bash 3.2 `set -u`.
 
 ## [0.1.0] - 2026-08-15
 

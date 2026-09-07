@@ -1,5 +1,7 @@
 # Codex Subscription Router
 
+This fork continues the original [b-nnett demonstration project](https://github.com/b-nnett/codex-subscription-router), with independently maintained fixes. Historical release reports describe the original tested build; they are not fresh validation of this fork.
+
 ![Multi-subscription account menu](screenshots/account-menu.png)
 
 Use multiple ChatGPT subscriptions from one independent macOS desktop app.
@@ -89,10 +91,12 @@ is rejected by default rather than being partially patched. See
 - Xcode Command Line Tools
 - Go 1.26+
 - Node.js 22.12+ and npm
-- An Apple Development or Developer ID Application signing identity
+- Optional: an Apple Development or Developer ID Application signing identity
 
-A team-backed signing identity is required for reliable Appshots and Computer
-Use permissions. Ad-hoc signing is intended only for diagnostics.
+A team-backed signing identity is used when one is present so Appshots and
+Computer Use keep stable privacy grants. If none exists, the patcher signs
+ad-hoc automatically. Restricted OpenAI entitlements such as push
+(`aps-environment`) are stripped so AMFI will still launch the copy.
 
 ## Install
 
@@ -100,7 +104,7 @@ Run one command. It downloads or updates the source, installs the locked build
 dependency, creates the independently signed app, and launches it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/b-nnett/codex-subscription-router/main/install.sh | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/hhh2210/codex-subscription-router/main/install.sh | /bin/bash
 ```
 
 The installer keeps its source checkout in
@@ -116,12 +120,12 @@ compatibility check fails.
 
 ### Install via prompt
 
-> Install Codex Subscription Router from `https://github.com/b-nnett/codex-subscription-router` on this Mac using the repository's supported one-command installer, without modifying the official ChatGPT app or deleting any existing router state. Verify the resulting app and Computer Use helper signatures, launch the app, and ask me only if a prerequisite or macOS permission requires interaction.
+> Install Codex Subscription Router from `https://github.com/hhh2210/codex-subscription-router` on this Mac using the repository's supported one-command installer, without modifying the official ChatGPT app or deleting any existing router state. Verify the resulting app and Computer Use helper signatures, launch the app, and ask me only if a prerequisite or macOS permission requires interaction.
 
 ### Install from a clone
 
 ```sh
-git clone https://github.com/b-nnett/codex-subscription-router.git
+git clone https://github.com/hhh2210/codex-subscription-router.git
 cd codex-subscription-router
 npm ci --ignore-scripts
 python3 scripts/patch_app.py
@@ -135,8 +139,9 @@ This creates:
 - an independent desktop profile under
   `~/Library/Application Support/Codex Subscription Router`
 
-The first valid Developer ID Application identity is selected, falling back to
-an Apple Development identity. Select a certificate explicitly when needed:
+The first valid Developer ID Application identity is selected, then an Apple
+Development identity, then an ad-hoc signature. Select a certificate
+explicitly when needed:
 
 ```sh
 CODEX_MUX_SIGNING_IDENTITY="Developer ID Application: Example Corp (TEAMID1234)" \
@@ -148,13 +153,10 @@ designated requirement and can invalidate existing macOS privacy consent. The
 patcher refuses an unexpected team change unless you deliberately pass
 `--allow-signing-team-change`.
 
-For diagnostic builds without a certificate:
-
-```sh
-python3 scripts/patch_app.py --allow-adhoc-signing
-```
-
-Appshots and Computer Use may not function with an ad-hoc signature.
+`--allow-adhoc-signing` is accepted for compatibility. It is no longer
+required: a machine with no certificate already gets an ad-hoc build. Appshots
+and Computer Use may still fail helper peer checks without a team-backed
+identity.
 
 ## Grant macOS permissions
 
@@ -176,13 +178,26 @@ request Automation access the first time Computer Use controls another app.
 
 ## Add subscriptions
 
-1. Open the profile menu at the bottom of the sidebar.
-2. Select **Add another subscription**.
-3. Complete the displayed device-code sign-in in your browser.
-4. Return to Codex Subscription Router and wait for the account row to appear.
+Open the profile menu at the bottom of the sidebar and select **Add another
+subscription**, then choose one path:
+
+- Select **Continue with ChatGPT** and complete the displayed device-code
+  sign-in in your browser.
+- Select **Import auth.json** and choose an existing, native Codex ChatGPT login
+  file. The file is sent only to the token-authenticated loopback service,
+  validated, and written to the new account's isolated Codex home before its
+  app-server starts.
 
 While the code is visible, clicking away does not dismiss the menu. Clicking
 the code copies it and opens the verification page.
+
+The importer accepts only a refreshable ChatGPT shape: `auth_mode` must be
+`chatgpt`, `OPENAI_API_KEY` must be absent or null, and `access_token`,
+`refresh_token`, and `account_id` must be present. Files larger than 64 KiB,
+unknown fields, and duplicate account IDs (including Primary) are rejected.
+Imported credentials are atomically written with mode `0600`; tokens are never
+returned by the control API. Import is a Router feature, not an officially
+documented ChatGPT desktop login method.
 
 The profile menu displays combined weekly usage followed by one row per
 subscription. Email addresses remain masked until hovered. The final row always
@@ -292,6 +307,8 @@ latest completed run is recorded in
   because the upstream profile response exposes counts rather than skill IDs.
 - Generated app bundles are tied to one macOS user and signing team.
 - Releases are source-only; patched OpenAI binaries are never distributed.
+- Treat every `auth.json` as a password; never attach one to an issue, PR, log,
+  or screenshot.
 
 ## Contributing and releases
 

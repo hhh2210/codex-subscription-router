@@ -329,7 +329,7 @@ func newRunningRemovalMultiplexer(t *testing.T) (*state.Store, state.Account, *M
 	t.Cleanup(func() {
 		for _, entry := range multiplexer.childEntries() {
 			shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = entry.child.CloseAndWait(shutdownContext)
+			_ = entry.child.Stop(shutdownContext)
 			cancel()
 		}
 	})
